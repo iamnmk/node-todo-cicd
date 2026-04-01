@@ -1,11 +1,10 @@
-const express = require('express'),
-    bodyParser = require('body-parser'),
-    // In order to use PUT HTTP verb to edit item
-    methodOverride = require('method-override'),
-    // Mitigate XSS using sanitizer
-    sanitizer = require('sanitizer'),
-    app = express(),
-    port = 8000
+const express = require('express');
+const bodyParser = require('body-parser');
+const methodOverride = require('method-override');
+const sanitizer = require('sanitizer');
+
+const app = express();
+const port = process.env.PORT || 8000;
 
 app.use(bodyParser.urlencoded({
     extended: false
@@ -80,9 +79,8 @@ app.get('/todo', function (req, res) {
         res.redirect('/todo');
     })
 
-    .listen(port, function () {
-        // Logging to console
-        console.log(`Todolist running on http://0.0.0.0:${port}`)
-    });
+    .listen(port, "0.0.0.0", function () {
+    console.log(`Todolist running on http://0.0.0.0:${port}`);
+});
 // Export app
 module.exports = app;
