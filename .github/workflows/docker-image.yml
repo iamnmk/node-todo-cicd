@@ -12,6 +12,7 @@ jobs:
       contents: read
       packages: write
       security-events: write
+      issues: write
     steps:
       - name: Checkout repository
         uses: actions/checkout@v4
@@ -99,6 +100,7 @@ jobs:
           target: 'http://${{ secrets.APP_HOST }}/todo'
           fail_action: false
           artifact_name: zap-report
+          allow_issue_writing: false
 
       - name: Upload ZAP report
         if: always()
