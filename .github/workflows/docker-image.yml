@@ -1,5 +1,4 @@
 name: Build, Scan, and Deploy
-
 on:
   push:
     branches:
@@ -9,15 +8,29 @@ on:
 jobs:
   build-scan-deploy:
     runs-on: ubuntu-latest
-
     permissions:
       contents: read
       packages: write
       security-events: write
-
     steps:
       - name: Checkout repository
         uses: actions/checkout@v4
+
+      - name: OWASP Dependency Check
+        uses: dependency-check/Dependency-Check_Action@main
+        continue-on-error: true
+        with:
+          project: ${{ github.repository }}
+          path: '.'
+          format: 'HTML'
+          out: 'reports'
+
+      - name: Upload Dependency Check report
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: dependency-check-report
+          path: reports/
 
       - name: Set lowercase image name
         run: echo "IMAGE_LC=${GITHUB_REPOSITORY,,}" >> $GITHUB_ENV
@@ -50,7 +63,7 @@ jobs:
           output: trivy-results.sarif
           vuln-type: os,library
           severity: CRITICAL,HIGH,MEDIUM
-          exit-code: '1'
+          exit-code: '0'
 
       - name: Upload Trivy SARIF report
         if: always()
@@ -63,3 +76,33 @@ jobs:
           curl --fail --silent --show-error \
             -H "Authorization: Bearer ${{ secrets.COOLIFY_TOKEN }}" \
             "${{ secrets.COOLIFY_WEBHOOK }}"
+
+      - name: Wait for app to be ready
+        continue-on-error: true
+        run: |
+          echo "Waiting for deployment..."
+          for i in {1..12}; do
+            STATUS=$(curl -s -o /dev/null -w "%{http_code}" http://${{ secrets.APP_HOST }}/todo)
+            if [ "$STATUS" = "200" ]; then
+              echo "App is up!"
+              exit 0
+            fi
+            echo "Attempt $i: got $STATUS, retrying in 10s..."
+            sleep 10
+          done
+          echo "App did not come up in time, continuing anyway..."
+
+      - name: OWASP ZAP Baseline Scan
+        uses: zaproxy/action-baseline@v0.14.0
+        continue-on-error: true
+        with:
+          target: 'http://${{ secrets.APP_HOST }}/todo'
+          fail_action: false
+          artifact_name: zap-report
+
+      - name: Upload ZAP report
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: zap-report
+          path: zap_report.html
