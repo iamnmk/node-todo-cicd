@@ -1,40 +1,74 @@
-name: Build, Scan, and Deploy
+name: Build, Scan, and Publish
+
 on:
   push:
     branches:
       - master
   workflow_dispatch:
 
+permissions:
+  contents: read
+  packages: write
+  security-events: write
+  issues: write
+
+env:
+  REGISTRY: ghcr.io
+  IMAGE_BACKEND: ghcr.io/${{ github.repository }}-backend
+  IMAGE_FRONTEND: ghcr.io/${{ github.repository }}-frontend
+  ZAP_TARGET_URL: ${{ secrets.OWASP_ZAP_TARGET_URL }}
+
 jobs:
-  build-scan-deploy:
+  build-scan:
     runs-on: ubuntu-latest
-    permissions:
-      contents: read
-      packages: write
-      security-events: write
-      issues: write
+
     steps:
       - name: Checkout repository
         uses: actions/checkout@v4
 
-      - name: OWASP Dependency Check
+      - name: Create report directories
+        run: |
+          mkdir -p reports/backend reports/frontend
+          mkdir -p trivy-reports
+          mkdir -p zap-reports
+
+      - name: Run OWASP Dependency Check on backend
         uses: dependency-check/Dependency-Check_Action@main
         continue-on-error: true
         with:
-          project: ${{ github.repository }}
-          path: '.'
-          format: 'HTML'
-          out: 'reports'
+          project: "${{ github.repository }}-backend"
+          path: "./backend"
+          format: "HTML,JSON,XML"
+          out: "reports/backend"
 
-      - name: Upload Dependency Check report
+      - name: Run OWASP Dependency Check on frontend
+        uses: dependency-check/Dependency-Check_Action@main
+        continue-on-error: true
+        with:
+          project: "${{ github.repository }}-frontend"
+          path: "./frontend"
+          format: "HTML,JSON,XML"
+          out: "reports/frontend"
+
+      - name: Ensure dependency reports exist
+        if: always()
+        run: |
+          if ! find reports -type f | grep -q .; then
+            echo "No dependency-check reports generated" > reports/README.txt
+          fi
+
+      - name: Upload Dependency Check reports
         if: always()
         uses: actions/upload-artifact@v4
         with:
-          name: dependency-check-report
+          name: dependency-check-reports
           path: reports/
+          if-no-files-found: warn
 
-      - name: Set lowercase image name
-        run: echo "IMAGE_LC=${GITHUB_REPOSITORY,,}" >> $GITHUB_ENV
+      - name: Set lowercase image names
+        run: |
+          echo "IMAGE_BACKEND_LC=${IMAGE_BACKEND,,}" >> $GITHUB_ENV
+          echo "IMAGE_FRONTEND_LC=${IMAGE_FRONTEND,,}" >> $GITHUB_ENV
 
       - name: Set up Docker Buildx
         uses: docker/setup-buildx-action@v3
@@ -46,65 +80,111 @@ jobs:
           username: ${{ github.actor }}
           password: ${{ secrets.GITHUB_TOKEN }}
 
-      - name: Build and push Docker image
+      - name: Build and push backend image
         uses: docker/build-push-action@v6
         with:
           context: .
+          file: ./backend/Dockerfile
           push: true
           tags: |
-            ghcr.io/${{ env.IMAGE_LC }}:latest
-            ghcr.io/${{ env.IMAGE_LC }}:${{ github.sha }}
+            ${{ env.IMAGE_BACKEND_LC }}:latest
+            ${{ env.IMAGE_BACKEND_LC }}:${{ github.sha }}
 
-      - name: Run Trivy image scan
+      - name: Build and push frontend image
+        uses: docker/build-push-action@v6
+        with:
+          context: ./frontend
+          file: ./frontend/Dockerfile
+          push: true
+          tags: |
+            ${{ env.IMAGE_FRONTEND_LC }}:latest
+            ${{ env.IMAGE_FRONTEND_LC }}:${{ github.sha }}
+
+      - name: Run Trivy scan on backend image
         uses: aquasecurity/trivy-action@0.35.0
         continue-on-error: true
         with:
-          image-ref: ghcr.io/${{ env.IMAGE_LC }}:latest
+          image-ref: ${{ env.IMAGE_BACKEND_LC }}:latest
           format: sarif
-          output: trivy-results.sarif
+          output: trivy-reports/trivy-backend.sarif
           vuln-type: os,library
           severity: CRITICAL,HIGH,MEDIUM
           exit-code: '0'
 
-      - name: Upload Trivy SARIF report
-        if: always()
+      - name: Run Trivy scan on frontend image
+        uses: aquasecurity/trivy-action@0.35.0
+        continue-on-error: true
+        with:
+          image-ref: ${{ env.IMAGE_FRONTEND_LC }}:latest
+          format: sarif
+          output: trivy-reports/trivy-frontend.sarif
+          vuln-type: os,library
+          severity: CRITICAL,HIGH,MEDIUM
+          exit-code: '0'
+
+      - name: Upload backend Trivy SARIF
+        if: always() && hashFiles('trivy-reports/trivy-backend.sarif') != ''
         uses: github/codeql-action/upload-sarif@v4
         with:
-          sarif_file: trivy-results.sarif
+          sarif_file: trivy-reports/trivy-backend.sarif
+          category: trivy-backend
 
-      - name: Trigger Coolify deploy
-        run: |
-          curl --fail --silent --show-error \
-            -H "Authorization: Bearer ${{ secrets.COOLIFY_TOKEN }}" \
-            "${{ secrets.COOLIFY_WEBHOOK }}"
-
-      - name: Wait for app to be ready
-        continue-on-error: true
-        run: |
-          echo "Waiting for deployment..."
-          for i in {1..12}; do
-            STATUS=$(curl -s -o /dev/null -w "%{http_code}" http://${{ secrets.APP_HOST }}/todo)
-            if [ "$STATUS" = "200" ]; then
-              echo "App is up!"
-              exit 0
-            fi
-            echo "Attempt $i: got $STATUS, retrying in 10s..."
-            sleep 10
-          done
-          echo "App did not come up in time, continuing anyway..."
-
-      - name: OWASP ZAP Baseline Scan
-        uses: zaproxy/action-baseline@v0.14.0
-        continue-on-error: true
+      - name: Upload frontend Trivy SARIF
+        if: always() && hashFiles('trivy-reports/trivy-frontend.sarif') != ''
+        uses: github/codeql-action/upload-sarif@v4
         with:
-          target: 'http://${{ secrets.APP_HOST }}/todo'
-          fail_action: false
-          artifact_name: zap-report
-          allow_issue_writing: false
+          sarif_file: trivy-reports/trivy-frontend.sarif
+          category: trivy-frontend
+
+      - name: Upload Trivy reports as artifact
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: trivy-reports
+          path: trivy-reports/
+          if-no-files-found: warn
+
+      - name: Run OWASP ZAP Baseline Scan
+        if: always()
+        continue-on-error: true
+        run: |
+          if [ -z "$ZAP_TARGET_URL" ]; then
+            echo "OWASP_ZAP_TARGET_URL secret is not set" > zap-reports/zap-skipped.txt
+            exit 0
+          fi
+
+          docker pull ghcr.io/zaproxy/zaproxy:stable
+
+          docker run --rm \
+            -v "${{ github.workspace }}/zap-reports:/zap/wrk/:rw" \
+            ghcr.io/zaproxy/zaproxy:stable \
+            zap-baseline.py \
+            -t "$ZAP_TARGET_URL" \
+            -r zap-report.html \
+            -J zap-report.json || true
+
+          if ! find zap-reports -type f | grep -q .; then
+            echo "ZAP did not generate a report. Check whether the URL is reachable from GitHub Actions." > zap-reports/zap-info.txt
+          fi
 
       - name: Upload ZAP report
         if: always()
         uses: actions/upload-artifact@v4
         with:
           name: zap-report
-          path: zap_report.html
+          path: zap-reports/
+          if-no-files-found: warn
+
+      - name: Write summary
+        if: always()
+        run: |
+          echo "# Security Summary" >> $GITHUB_STEP_SUMMARY
+          echo "" >> $GITHUB_STEP_SUMMARY
+          echo "## Dependency-Check" >> $GITHUB_STEP_SUMMARY
+          find reports -type f >> $GITHUB_STEP_SUMMARY || true
+          echo "" >> $GITHUB_STEP_SUMMARY
+          echo "## Trivy" >> $GITHUB_STEP_SUMMARY
+          find trivy-reports -type f >> $GITHUB_STEP_SUMMARY || true
+          echo "" >> $GITHUB_STEP_SUMMARY
+          echo "## ZAP" >> $GITHUB_STEP_SUMMARY
+          find zap-reports -type f >> $GITHUB_STEP_SUMMARY || true
