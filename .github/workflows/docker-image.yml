@@ -1,5 +1,4 @@
 name: Build, Scan, and Deploy
-
 on:
   push:
     branches:
@@ -9,20 +8,15 @@ on:
 jobs:
   build-scan-deploy:
     runs-on: ubuntu-latest
-
     permissions:
       contents: read
       packages: write
       security-events: write
       issues: write
-
     steps:
       - name: Checkout repository
         uses: actions/checkout@v4
 
-      # =========================
-      # OWASP Dependency Check
-      # =========================
       - name: OWASP Dependency Check
         uses: dependency-check/Dependency-Check_Action@main
         continue-on-error: true
@@ -39,9 +33,6 @@ jobs:
           name: dependency-check-report
           path: reports/
 
-      # =========================
-      # Docker Build & Push
-      # =========================
       - name: Set lowercase image name
         run: echo "IMAGE_LC=${GITHUB_REPOSITORY,,}" >> $GITHUB_ENV
 
@@ -64,9 +55,6 @@ jobs:
             ghcr.io/${{ env.IMAGE_LC }}:latest
             ghcr.io/${{ env.IMAGE_LC }}:${{ github.sha }}
 
-      # =========================
-      # Trivy Scan
-      # =========================
       - name: Run Trivy image scan
         uses: aquasecurity/trivy-action@0.35.0
         continue-on-error: true
@@ -84,9 +72,6 @@ jobs:
         with:
           sarif_file: trivy-results.sarif
 
-      # =========================
-      # Deploy (Coolify)
-      # =========================
       - name: Trigger Coolify deploy
         run: |
           curl --fail --silent --show-error \
@@ -108,14 +93,11 @@ jobs:
           done
           echo "App did not come up in time, continuing anyway..."
 
-      # =========================
-      # OWASP ZAP
-      # =========================
       - name: OWASP ZAP Baseline Scan
         uses: zaproxy/action-baseline@v0.14.0
         continue-on-error: true
         with:
-          target: "http://${{ secrets.APP_HOST }}/todo"
+          target: 'http://${{ secrets.APP_HOST }}/todo'
           fail_action: false
           artifact_name: zap-report
           allow_issue_writing: false
