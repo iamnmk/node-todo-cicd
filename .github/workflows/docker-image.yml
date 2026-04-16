@@ -72,39 +72,4 @@ jobs:
         with:
           sarif_file: trivy-results.sarif
 
-      - name: Trigger Coolify deploy
-        run: |
-          curl --fail --silent --show-error \
-            -H "Authorization: Bearer ${{ secrets.COOLIFY_TOKEN }}" \
-            "${{ secrets.COOLIFY_WEBHOOK }}"
-
-      - name: Wait for app to be ready
-        continue-on-error: true
-        run: |
-          echo "Waiting for deployment..."
-          for i in {1..12}; do
-            STATUS=$(curl -s -o /dev/null -w "%{http_code}" http://${{ secrets.APP_HOST }}/todo)
-            if [ "$STATUS" = "200" ]; then
-              echo "App is up!"
-              exit 0
-            fi
-            echo "Attempt $i: got $STATUS, retrying in 10s..."
-            sleep 10
-          done
-          echo "App did not come up in time, continuing anyway..."
-
-      - name: OWASP ZAP Baseline Scan
-        uses: zaproxy/action-baseline@v0.14.0
-        continue-on-error: true
-        with:
-          target: 'http://${{ secrets.APP_HOST }}/todo'
-          fail_action: false
-          artifact_name: zap-report
-          allow_issue_writing: false
-
-      - name: Upload ZAP report
-        if: always()
-        uses: actions/upload-artifact@v4
-        with:
-          name: zap-report
-          path: zap_report.html
+     
